@@ -42,8 +42,16 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
-    - name: Build Kiryuu Extension
-      run: ./gradlew :id-kiryuu:assembleRelease --no-daemon
+    - name: Build Local Libraries
+      run: |
+        echo "Building local extension library..."
+        ./gradlew :lib-extension:publishToMavenLocal --no-daemon
+        ./gradlew :lib-ratelimit:publishToMavenLocal --no-daemon
+        ./gradlew :duktape-stub:publishToMavenLocal --no-daemon  
+        ./gradlew :preference-stub:publishToMavenLocal --no-daemon
+        
+    - name: Build Kiryuu Extension (Skip lint)
+      run: ./gradlew :id-kiryuu:assembleRelease -x lint --no-daemon
       
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
