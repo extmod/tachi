@@ -1,4 +1,4 @@
-name: Build single extension
+name: Build single extension (robust)
 
 on:
   workflow_dispatch:
@@ -8,33 +8,32 @@ on:
         default: 'id'
         required: false
       extension:
-        description: Target extension name
+        description: Target extension name (folder / module name)
         required: true
       git-repo:
-        description: Git repo (Optional, defaults to <your name>/aniyomi-extensions
-        default: 'extmod/extensions-source'
+        description: Git repo (Optional, defaults to extmod/extensions-source)
+        default: 'extmod/tachi'
         required: false
       git-ref:
-        description: Git Ref (Optional, defaults to master)
-        default: 'main'
+        description: Git Ref (Optional, defaults to main)
+        default: 'master'
         required: false
-
-env:
-  EXTPATH: ${{ github.event.inputs.lang }}/${{ github.event.inputs.extension }}
-  EXTSLUG: ${{ github.event.inputs.lang }}:${{ github.event.inputs.extension }}
-  REPO: ${{ github.event.inputs.git-repo }}
 
 jobs:
   build-extension:
     name: Build a single extension
     runs-on: ubuntu-latest
+    env:
+      GRADLE_TASK: assembleDebug
     steps:
-      - name: Check inputs
+      - name: Set REPO default if empty
         run: |
-          set -e
-          if [[ -z "${{ env.REPO }}" ]]; then
-            echo "REPO=${{ github.repository_owner }}/aniyomi-extensions" >> $GITHUB_ENV
+          if [[ -z "${{ github.event.inputs.git-repo }}" || "${{ github.event.inputs.git-repo }}" == "" ]]; then
+            echo "REPO=extmod/extensions-source" >> $GITHUB_ENV
+          else
+            echo "REPO=${{ github.event.inputs.git-repo }}" >> $GITHUB_ENV
           fi
+
       - name: Clone Repository (Latest)
         uses: actions/checkout@v4
         with:
@@ -48,14 +47,128 @@ jobs:
           java-version: 8
           distribution: temurin
 
-      - name: Build APK
+      - name: Detect module path and build
         env:
-          CI: false
-        run: ./gradlew -p src ${{ env.EXTSLUG }}:assembleDebug
+          LANG_IN: ${{ github.event.inputs.lang }}
+          EXT_IN: ${{ github.event.inputs.extension }}
+        run: |
+          set -euo pipefail
+          echo "Inputs: lang='$LANG_IN'  extension='$EXT_IN'"
+
+          # Locate settings file
+          SETTINGS_FILE=""
+          if [ -f settings.gradle ]; then
+            SETTINGS_FILE="settings.gradle"
+          elif [ -f settings.gradle.kts ]; then
+            SETTINGS_FILE="settings.gradle.kts"
+          else
+            echo "ERROR: No settings.gradle or settings.gradle.kts found in repo root."
+            exit 1
+          fi
+          echo "Using settings file: $SETTINGS_FILE"
+
+          # Parse includes into module array
+          modules=()
+          # Grab all include lines, then extract items
+          grep -E "include[[:space:]]" "$SETTINGS_FILE" | while IFS= read -r line; do
+            # keep content after include, strip parentheses and whitespace
+            after=$(echo "$line" | sed -E 's/.*include[[:space:]]*\(?(.*)\)?/\1/')
+            # split by comma
+            IFS=',' read -ra parts <<< "$after"
+            for p in "${parts[@]}"; do
+              # remove quotes and spaces
+              clean=$(echo "$p" | sed -E "s/[\"'[:space:]]//g")
+              if [ -n "$clean" ]; then
+                modules+=("$clean")
+              fi
+            done
+          done
+
+          # print found modules
+          if [ ${#modules[@]} -eq 0 ]; then
+            echo "No modules parsed from $SETTINGS_FILE (modules array empty)."
+          else
+            echo "Parsed modules from settings:"
+            for m in "${modules[@]}"; do
+              echo " - $m"
+            done
+          fi
+
+          # prepare candidate module paths (try common forms)
+          candidates=(
+            ":src:${LANG_IN}:${EXT_IN}"
+            ":${LANG_IN}:${EXT_IN}"
+            ":${LANG_IN}_${EXT_IN}"
+            ":${LANG_IN}-${EXT_IN}"
+            ":src:${LANG_IN}-${EXT_IN}"
+            ":${EXT_IN}"   # sometimes module is simply ':extension'
+          )
+
+          found=""
+          for c in "${candidates[@]}"; do
+            # normalize candidate without leading colon for comparison
+            cand_no_col="${c#:}"
+            for m in "${modules[@]}"; do
+              # compare multiple normalized variants
+              if [ "$m" = "$c" ] || [ "$m" = "$cand_no_col" ] || [ ":$m" = "$c" ]; then
+                found="$m"
+                break 2
+              fi
+            done
+          done
+
+          if [ -n "$found" ]; then
+            # ensure leading colon
+            if [[ "$found" != :* ]]; then
+              found=":${found}"
+            fi
+            echo "Matched module: $found"
+            echo "Running: ./gradlew ${found}:${GRADLE_TASK} -x lint --no-daemon --stacktrace"
+            chmod +x ./gradlew || true
+            ./gradlew "${found}:${GRADLE_TASK}" -x lint --no-daemon --stacktrace
+          else
+            echo "No exact module match found. Will try fallbacks."
+
+            # Fallback 1: try building with :src:lang:ext from root
+            guess=":src:${LANG_IN}:${EXT_IN}"
+            echo "Trying fallback: ./gradlew ${guess}:${GRADLE_TASK}"
+            if chmod +x ./gradlew && ./gradlew "${guess}:${GRADLE_TASK}" -x lint --no-daemon --stacktrace; then
+              echo "Fallback succeeded using ${guess}"
+            else
+              # Fallback 2: try building inside src (original approach)
+              echo "Fallback to building inside src directory as last resort."
+              # try common forms inside src
+              try1=":${LANG_IN}:${EXT_IN}"
+              try2=":${EXT_IN}"
+              set +e
+              chmod +x ./gradlew || true
+              ./gradlew -p src "${try1}:${GRADLE_TASK}" -x lint --no-daemon --stacktrace
+              rc=$?
+              if [ $rc -ne 0 ]; then
+                echo "Try2: ./gradlew -p src ${try2}:${GRADLE_TASK}"
+                ./gradlew -p src "${try2}:${GRADLE_TASK}" -x lint --no-daemon --stacktrace
+                rc2=$?
+                if [ $rc2 -ne 0 ]; then
+                  echo "All build attempts failed."
+                  exit 2
+                fi
+              fi
+              set -e
+            fi
+          fi
+
+      - name: Collect build outputs
+        run: |
+          echo "Looking for generated apks/aars/jars..."
+          find . -type f -name "*.apk" -o -name "*.aar" -o -name "*.jar" || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{github.event.inputs.lang}}-${{ github.event.inputs.extension }}
-          path: "src/${{ env.EXTPATH }}/build/outputs/apk/debug/*.apk"
+          name: ${{ github.event.inputs.lang }}-${{ github.event.inputs.extension }}-build
+          path: |
+            src/${{ github.event.inputs.lang }}/${{ github.event.inputs.extension }}/build/outputs/**/*.apk
+            **/build/outputs/**/*.apk
+            **/build/outputs/**/*.aar
+            **/build/libs/*.jar
           retention-days: 1
