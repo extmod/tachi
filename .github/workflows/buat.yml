@@ -1,4 +1,4 @@
-name: Build single extension (src/<lang>/<extension> layout)
+name: Build single extension (src/<lang>/<extension> layout) - fixed SDK setup
 
 on:
   workflow_dispatch:
@@ -28,7 +28,7 @@ on:
         default: Debug
 
 env:
-  ANDROID_COMPILE_SDK: "28"
+  ANDROID_PLATFORM: "28"
   BUILD_TOOLS_VERSION: "28.0.3"
   GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx1536m"
 
@@ -55,19 +55,34 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Set up JDK 8 (Gradle 5.x compatible)
+      # --- temporary JDK 17 only for SDK installation (sdkmanager may require JDK17) ---
+      - name: Set up JDK 17 (temporary for sdkmanager)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+        id: jdk17
+
+      - name: Setup Android SDK (install cmdline-tools + packages) 
+        uses: android-actions/setup-android@v3
+        with:
+          # jika Anda ingin versi cmdline-tools tertentu, set di sini (opsional)
+          cmdline-tools-version: '12.0'
+          # paket yang ingin dipastikan tersedia
+          packages: |
+            platform-tools
+            platforms;android-${{ env.ANDROID_PLATFORM }}
+            build-tools;${{ env.BUILD_TOOLS_VERSION }}
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: true
+
+      # --- switch back to JDK 8 for Gradle 5.x build compatibility ---
+      - name: Set up JDK 8 (for Gradle 5.x build)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '8'
           cache: 'gradle'
-
-      - name: Setup Android SDK (platform & build-tools)
-        uses: android-actions/setup-android@v3
-        with:
-          api-levels: ${{ env.ANDROID_COMPILE_SDK }}
-          build-tools: ${{ env.BUILD_TOOLS_VERSION }}
-          components: "platform-tools,platforms;android-${{ env.ANDROID_COMPILE_SDK }}"
 
       - name: Ensure gradlew is executable
         run: |
