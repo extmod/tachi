@@ -1,132 +1,64 @@
-name: Build single extension (src/<lang>/<extension> layout) - fixed SDK setup
+name: Build Kiryuu Extension
 
 on:
+  push:
+    branches: [ master, main ]
+    paths:
+      - 'src/id/kiryuu/**'
+      - 'lib/**'
+      - 'build.gradle*'
+      - 'settings.gradle*'
+  pull_request:
+    branches: [ master, main ]
+    paths:
+      - 'src/id/kiryuu/**'
+      - 'lib/**'
   workflow_dispatch:
-    inputs:
-      lang:
-        description: 'Extension language folder (contoh: en, id, es)'
-        required: true
-        default: 'id'
-      extension:
-        description: 'Extension folder/name (contoh: mangadex, komiku)'
-        required: true
-      git-repo:
-        description: 'Optional owner/repo to checkout instead of this repo (contoh: extmod/extensions-source)'
-        required: false
-        default: ''
-      git-ref:
-        description: 'Branch / tag / sha to checkout'
-        required: false
-        default: 'main'
-      buildType:
-        description: 'Build variant'
-        required: true
-        type: choice
-        options:
-          - Debug
-          - Release
-        default: Debug
-
-env:
-  ANDROID_PLATFORM: "28"
-  BUILD_TOOLS_VERSION: "28.0.3"
-  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx1536m"
 
 jobs:
-  build-extension:
+  build-kiryuu:
     runs-on: ubuntu-latest
-    name: Build extension
-
+    
     steps:
-      - name: Checkout repository (current or specified)
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.event.inputs.git-repo != '' && github.event.inputs.git-repo || github.repository }}
-          fetch-depth: 0
-          ref: ${{ github.event.inputs.git-ref }}
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/gradle/wrapper/gradle-wrapper.properties') }}-${{ hashFiles('**/*.gradle*','**/gradle.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
-
-      # --- temporary JDK 17 only for SDK installation (sdkmanager may require JDK17) ---
-      - name: Set up JDK 17 (temporary for sdkmanager)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-        id: jdk17
-
-      - name: Setup Android SDK (install cmdline-tools + packages) 
-        uses: android-actions/setup-android@v3
-        with:
-          # jika Anda ingin versi cmdline-tools tertentu, set di sini (opsional)
-          cmdline-tools-version: '12.0'
-          # paket yang ingin dipastikan tersedia
-          packages: |
-            platform-tools
-            platforms;android-${{ env.ANDROID_PLATFORM }}
-            build-tools;${{ env.BUILD_TOOLS_VERSION }}
-          accept-android-sdk-licenses: true
-          log-accepted-android-sdk-licenses: true
-
-      # --- switch back to JDK 8 for Gradle 5.x build compatibility ---
-      - name: Set up JDK 8 (for Gradle 5.x build)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '8'
-          cache: 'gradle'
-
-      - name: Ensure gradlew is executable
-        run: |
-          if [ -f "./gradlew" ]; then chmod +x ./gradlew; fi
-          ./gradlew --version || true
-
-      - name: Validate module folder and build
-        env:
-          LANG_IN: ${{ github.event.inputs.lang }}
-          EXT_IN: ${{ github.event.inputs.extension }}
-          BUILD_TYPE: ${{ github.event.inputs.buildType }}
-        run: |
-          set -euo pipefail
-          echo "Inputs: lang='${LANG_IN}', extension='${EXT_IN}', buildType='${BUILD_TYPE}'"
-          MODULE=":${LANG_IN}-${EXT_IN}"
-          SRC_DIR="src/${LANG_IN}/${EXT_IN}"
-
-          echo "Expecting module path: ${MODULE}"
-          echo "Expecting project directory: ${SRC_DIR}"
-
-          if [ ! -d "${SRC_DIR}" ]; then
-            echo "ERROR: Directory ${SRC_DIR} not found. Available src/ listing:"
-            ls -la src || true
-            exit 1
-          fi
-
-          TASK="assemble${BUILD_TYPE}"
-          echo "Running Gradle task from repo root: ./gradlew ${MODULE}:${TASK}"
-          ./gradlew "${MODULE}:${TASK}" -x lint --no-daemon --stacktrace
-
-      - name: Show build outputs (debug)
-        run: |
-          echo "Looking for outputs in module build dir and global build dirs..."
-          find "src/${{ github.event.inputs.lang }}/${{ github.event.inputs.extension }}/build" -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.jar" \) -print || true
-          find . -type f \( -name "*.apk" -o -name "*.aar" -o -name "*.jar" \) -print || true
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ github.event.inputs.lang }}-${{ github.event.inputs.extension }}-${{ github.event.inputs.buildType }}
-          path: |
-            src/${{ github.event.inputs.lang }}/${{ github.event.inputs.extension }}/build/outputs/**/*.apk
-            src/${{ github.event.inputs.lang }}/${{ github.event.inputs.extension }}/build/outputs/**/*.aar
-            **/build/outputs/**/*.apk
-            **/build/outputs/**/*.aar
-            **/build/libs/*.jar
-          retention-days: 1
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        
+    - name: Cache Gradle packages
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.gradle/caches
+          ~/.gradle/wrapper
+        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        restore-keys: |
+          ${{ runner.os }}-gradle-
+          
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+      
+    - name: Build Kiryuu Extension
+      run: ./gradlew :id-kiryuu:assembleRelease --no-daemon
+      
+    - name: Upload APK artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kiryuu-extension
+        path: src/id/kiryuu/build/outputs/apk/release/*.apk
+        retention-days: 30
+        
+    - name: Get APK info
+      run: |
+        APK_PATH=$(find src/id/kiryuu/build/outputs/apk/release -name "*.apk" | head -1)
+        if [ -f "$APK_PATH" ]; then
+          echo "APK built successfully: $APK_PATH"
+          ls -la "$APK_PATH"
+        else
+          echo "APK not found!"
+          exit 1
+        fi
